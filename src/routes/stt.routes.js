@@ -1,0 +1,1 @@
+import {Router} from "express"; import {transcribe} from "../controllers/stt.controller.js"; const r=Router(); r.post("/transcribe",transcribe); export default r;

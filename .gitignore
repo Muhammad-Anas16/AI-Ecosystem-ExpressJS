@@ -1,0 +1,10 @@
+.venv/
+node_modules/
+models/vosk/*.zip
+models/vosk/*/*
+models/piper/*.onnx
+models/piper/*.onnx.json
+models/llm/*.gguf
+data/tmp/
+__pycache__/
+*.pyc

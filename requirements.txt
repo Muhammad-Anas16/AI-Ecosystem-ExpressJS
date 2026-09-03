@@ -1,0 +1,6 @@
+vosk==0.3.45
+websockets>=12,<16
+PyAudio==0.2.14
+piper-tts==1.7.0
+llama-cpp-python>=0.3.16
+huggingface-hub>=0.34.0

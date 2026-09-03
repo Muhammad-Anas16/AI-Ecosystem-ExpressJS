@@ -1,0 +1,1 @@
+import {Router} from "express"; import {readScreen} from "../controllers/ocr.controller.js"; const r=Router(); r.post("/read",readScreen); export default r;
