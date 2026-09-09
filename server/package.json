@@ -18,9 +18,13 @@
     "cors": "^2.8.6",
     "dotenv": "^16.6.1",
     "express": "^5.2.1",
+    "node-llama-cpp": "^3.20.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
+  },
+  "allowScripts": {
+    "node-llama-cpp@3.20.0": true
   }
 }

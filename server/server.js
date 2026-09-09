@@ -10,6 +10,7 @@ import {
   pipeRealtimeVoice,
   stopPythonProcess,
 } from './src/services/function.js';
+import llmRoutes from './src/routes/llm.routes.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -17,11 +18,13 @@ const realtime = new WebSocketServer({ noServer: true });
 
 app.disable('x-powered-by');
 app.use(cors());
+app.use(express.json());
 app.use(express.json({ limit: '256kb' }));
 app.use(express.static(config.public));
 
 // All API routes live here.
 app.use('/api', voiceRoutes);
+app.use("/api/llm", llmRoutes);
 
 app.get('/api', (_req, res) => {
   res.json({
