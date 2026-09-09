@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>JARVIS - Vosk + Piper</title>
+  <style>
+    body{font-family:system-ui,sans-serif;max-width:900px;margin:auto;padding:20px;background:#10131a;color:#f2f4f7}
+    section{background:#171c25;border:1px solid #2c3442;border-radius:14px;padding:16px;margin:14px 0}
+    button,textarea{font:inherit;padding:10px;border-radius:8px;border:1px solid #3a4351;margin:4px}
+    button{cursor:pointer}textarea{width:100%;box-sizing:border-box;min-height:100px;background:#0e1117;color:#fff}
+    pre{background:#0d1015;padding:12px;border-radius:10px;white-space:pre-wrap;min-height:40px}
+  </style>
+</head>
+<body>
+  <h1>JARVIS Vosk + Piper</h1>
+  <p>Simple local architecture: Browser → Express → function.js → Python worker.</p>
+
+  <section>
+    <h2>1. Health</h2>
+    <button id="health">Check health</button>
+    <pre id="healthOut">Ready</pre>
+  </section>
+
+  <section>
+    <h2>2. Piper TTS</h2>
+    <textarea id="text">Hello from the JARVIS Piper TTS service.</textarea>
+    <br>
+    <button id="speak">Generate + play WAV</button>
+    <audio id="audio" controls></audio>
+    <pre id="ttsOut"></pre>
+  </section>
+
+  <section>
+    <h2>3. Realtime Vosk STT</h2>
+    <button id="start">Start microphone</button>
+    <button id="stop" disabled>Stop</button>
+    <pre id="sttOut">Idle</pre>
+  </section>
+
+<script>
+const $ = id => document.getElementById(id);
+
+$('health').onclick = async () => {
+  try {
+    const response = await fetch('/api/health');
+    $('healthOut').textContent = await response.text();
+  } catch (error) {
+    $('healthOut').textContent = error.message;
+  }
+};
+
+$('speak').onclick = async () => {
+  const text = $('text').value.trim();
+  if (!text) return;
+
+  $('ttsOut').textContent = 'Generating...';
+  try {
+    const response = await fetch('/api/tts/speak', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text})
+    });
+
+    if (!response.ok) {
+      $('ttsOut').textContent = await response.text();
+      return;
+    }
+
+    const blob = await response.blob();
+    $('audio').src = URL.createObjectURL(blob);
+    await $('audio').play().catch(() => {});
+    $('ttsOut').textContent = `Piper WAV ready (${blob.size} bytes)`;
+  } catch (error) {
+    $('ttsOut').textContent = error.message;
+  }
+};
+
+let ws;
+let stream;
+let audioContext;
+let source;
+let processor;
+
+function downsampleTo16k(float32, inputRate) {
+  const outputRate = 16000;
+  if (inputRate === outputRate) return float32;
+
+  const ratio = inputRate / outputRate;
+  const outputLength = Math.floor(float32.length / ratio);
+  const output = new Float32Array(outputLength);
+  let inputIndex = 0;
+
+  for (let i = 0; i < outputLength; i++) {
+    const nextIndex = Math.floor((i + 1) * ratio);
+    let sum = 0;
+    let count = 0;
+    while (inputIndex < nextIndex && inputIndex < float32.length) {
+      sum += float32[inputIndex++];
+      count++;
+    }
+    output[i] = count ? sum / count : 0;
+  }
+
+  return output;
+}
+
+function floatToPCM16(float32) {
+  const pcm = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const sample = Math.max(-1, Math.min(1, float32[i]));
+    pcm[i] = sample < 0 ? sample * 32768 : sample * 32767;
+  }
+  return pcm;
+}
+
+$('start').onclick = async () => {
+  $('sttOut').textContent = 'Connecting...';
+
+  try {
+    ws = new WebSocket(
+      (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/vosk'
+    );
+    ws.binaryType = 'arraybuffer';
+
+    ws.onmessage = event => {
+      if (typeof event.data !== 'string') return;
+      const message = JSON.parse(event.data);
+
+      if (message.type === 'vosk.partial') {
+        $('sttOut').textContent = 'Partial: ' + message.text;
+      }
+      if (message.type === 'vosk.final' && message.text) {
+        $('sttOut').textContent = 'Final: ' + message.text;
+      }
+      if (message.type === 'error') {
+        $('sttOut').textContent = 'Error: ' + message.error;
+      }
+    };
+
+    await new Promise((resolve, reject) => {
+      ws.onopen = resolve;
+      ws.onerror = reject;
+    });
+
+    stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    audioContext = new AudioContext();
+    source = audioContext.createMediaStreamSource(stream);
+    processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+    ws.send(JSON.stringify({type: 'vosk.start', sample_rate: 16000}));
+
+    processor.onaudioprocess = event => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const input = event.inputBuffer.getChannelData(0);
+      const downsampled = downsampleTo16k(input, audioContext.sampleRate);
+      const pcm = floatToPCM16(downsampled);
+      ws.send(pcm.buffer);
+    };
+
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+
+    $('start').disabled = true;
+    $('stop').disabled = false;
+    $('sttOut').textContent = `Listening... browser=${audioContext.sampleRate}Hz → Vosk=16000Hz`;
+  } catch (error) {
+    $('sttOut').textContent = error.message;
+    cleanupAudio();
+  }
+};
+
+function cleanupAudio() {
+  try { processor?.disconnect(); } catch {}
+  try { source?.disconnect(); } catch {}
+  try { stream?.getTracks().forEach(track => track.stop()); } catch {}
+  try { audioContext?.close(); } catch {}
+  try { ws?.close(); } catch {}
+  processor = null;
+  source = null;
+  stream = null;
+  audioContext = null;
+  ws = null;
+}
+
+$('stop').onclick = () => {
+  try {
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({type: 'vosk.end'}));
+    }
+  } catch {}
+
+  cleanupAudio();
+  $('start').disabled = false;
+  $('stop').disabled = true;
+};
+</script>
+</body>
+</html>
