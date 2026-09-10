@@ -1,0 +1,12 @@
+node_modules/
+.venv/
+.env
+multer/*
+tmp/*
+models/**/*.gguf
+models/**/*.zip
+models/**/*.onnx
+models/**/*.json
+bin/
+__pycache__/
+*.log

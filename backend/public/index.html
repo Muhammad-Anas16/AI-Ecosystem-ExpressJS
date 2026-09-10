@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>JARVIS Local Test</title>
+  <style>
+    body{font-family:Arial,sans-serif;max-width:1000px;margin:20px auto;padding:0 16px;line-height:1.4}
+    button{padding:10px 14px;margin:4px;cursor:pointer}
+    input{padding:10px}
+    textarea{width:100%;min-height:80px;padding:10px}
+    pre{background:#111;color:#0f0;padding:12px;min-height:180px;white-space:pre-wrap}
+    img{max-width:100%;border:1px solid #bbb;margin-top:8px}
+    .card{border:1px solid #ddd;border-radius:8px;padding:14px;margin:12px 0}
+    .status{font-weight:bold}
+  </style>
+</head>
+<body>
+  <h1>JARVIS Local Server Test</h1>
+  <p>Server-side tests: LLM, Vosk realtime STT, Piper TTS, screenshot, OCR and Vision.</p>
+
+  <div class="card">
+    <h2>Health</h2>
+    <button onclick="getJSON('/api/health')">Server</button>
+    <button onclick="getJSON('/api/voice/health')">Python/Vosk/Piper</button>
+    <button onclick="getJSON('/api/llm/status')">LLM</button>
+    <button onclick="getJSON('/api/ocr/status')">OCR</button>
+    <button onclick="getJSON('/api/vision/status')">Vision</button>
+  </div>
+
+  <div class="card">
+    <h2>Realtime Vosk STT</h2>
+    <button id="startVoice" onclick="startVosk()">Start microphone</button>
+    <button id="stopVoice" onclick="stopVosk()" disabled>Stop</button>
+    <div class="status" id="voskStatus">Idle</div>
+    <pre id="transcript">No transcript yet.</pre>
+  </div>
+
+  <div class="card">
+    <h2>Piper TTS</h2>
+    <input id="ttsText" value="Hello Boss. Piper text to speech is working." style="width:80%" />
+    <button onclick="testTTS()">Speak</button>
+  </div>
+
+  <div class="card">
+    <h2>Server Screenshot</h2>
+    <button onclick="takeScreenshot()">Take screenshot</button>
+    <button onclick="runOCR()">Read screenshot with OCR</button>
+    <button onclick="runVision()">Understand screenshot with Vision</button>
+    <div><img id="screenImage" alt="Server screenshot" hidden /></div>
+  </div>
+
+  <div class="card">
+    <h2>LLM</h2>
+    <textarea id="llmText">Hello. Reply in one short sentence and use the same language as the user.</textarea>
+    <button onclick="testLLM()">Ask LLM</button>
+  </div>
+
+  <pre id="output">Ready.</pre>
+
+<script>
+const output=document.getElementById('output');
+const transcript=document.getElementById('transcript');
+const voskStatus=document.getElementById('voskStatus');
+let socket=null, audioContext=null, mediaStream=null, processor=null;
+let sourceSampleRate=48000;
+function show(v){output.textContent=typeof v==='string'?v:JSON.stringify(v,null,2)}
+async function getJSON(url,options={}){try{const r=await fetch(url,options);const ct=r.headers.get('content-type')||'';show(ct.includes('application/json')?await r.json():await r.text())}catch(e){show(e.message)}}
+async function testLLM(){await getJSON('/api/llm/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:document.getElementById('llmText').value})})}
+async function testTTS(){try{const r=await fetch('/api/voice/tts/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:document.getElementById('ttsText').value})});if(!r.ok)throw new Error(await r.text());const blob=await r.blob();const url=URL.createObjectURL(blob);const audio=new Audio(url);audio.onended=()=>URL.revokeObjectURL(url);await audio.play();show('Piper audio started.')}catch(e){show(e.message)}}
+async function takeScreenshot(){try{const r=await fetch('/api/vision/screenshot');if(!r.ok)throw new Error(await r.text());const blob=await r.blob();const url=URL.createObjectURL(blob);const img=document.getElementById('screenImage');img.src=url;img.hidden=false;show('Server screenshot captured.')}catch(e){show(e.message)}}
+async function runOCR(){await getJSON('/api/ocr/screen',{method:'POST'})}
+async function runVision(){await getJSON('/api/vision/screen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:'Describe the important visible content on this screen in a few concise sentences.'})})}
+function downsampleBuffer(buffer,inputSampleRate,outputSampleRate){if(outputSampleRate===inputSampleRate)return buffer;const ratio=inputSampleRate/outputSampleRate;const newLength=Math.round(buffer.length/ratio);const result=new Float32Array(newLength);let offset=0;let pos=0;while(offset<result.length){const next=Math.round((offset+1)*ratio);let sum=0,count=0;for(let i=Math.round(offset*ratio);i<next&&i<buffer.length;i++){sum+=buffer[i];count++}result[offset]=count?sum/count:0;offset++;pos=next}return result}
+function floatTo16BitPCM(float32){const out=new Int16Array(float32.length);for(let i=0;i<float32.length;i++){const s=Math.max(-1,Math.min(1,float32[i]));out[i]=s<0?s*0x8000:s*0x7fff}return out.buffer}
+async function startVosk(){try{mediaStream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});audioContext=new (window.AudioContext||window.webkitAudioContext)();sourceSampleRate=audioContext.sampleRate;socket=new WebSocket(`ws://${location.host}/ws/vosk`);socket.binaryType='arraybuffer';socket.onopen=()=>socket.send(JSON.stringify({type:'vosk',sample_rate:16000}));socket.onmessage=e=>{if(typeof e.data!=='string')return;let msg;try{msg=JSON.parse(e.data)}catch{return}if(msg.type==='vosk.ready'){voskStatus.textContent='Listening...';socket.send(JSON.stringify({type:'vosk.start'}));}if(msg.type==='vosk.partial')transcript.textContent='Partial: '+(msg.text||'');if(msg.type==='vosk.final'&&msg.text)transcript.textContent+=(transcript.textContent==='No transcript yet.'?'':'\n')+'Final: '+msg.text;if(msg.type==='done')stopVosk()};socket.onerror=()=>{voskStatus.textContent='WebSocket error'};processor=audioContext.createScriptProcessor(4096,1,1);const source=audioContext.createMediaStreamSource(mediaStream);processor.onaudioprocess=e=>{if(!socket||socket.readyState!==WebSocket.OPEN)return;const input=e.inputBuffer.getChannelData(0);const pcm=downsampleBuffer(input,sourceSampleRate,16000);socket.send(floatTo16BitPCM(pcm))};source.connect(processor);processor.connect(audioContext.destination);document.getElementById('startVoice').disabled=true;document.getElementById('stopVoice').disabled=false;show('Microphone connected. Speak now.')}catch(e){show(e.message);stopVosk()}}
+function stopVosk(){try{if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'vosk.end'}))}catch{}try{processor?.disconnect()}catch{}try{mediaStream?.getTracks().forEach(t=>t.stop())}catch{}try{audioContext?.close()}catch{}processor=null;mediaStream=null;audioContext=null;document.getElementById('startVoice').disabled=false;document.getElementById('stopVoice').disabled=true;voskStatus.textContent='Idle'}
+</script>
+</body>
+</html>
