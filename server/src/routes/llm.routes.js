@@ -1,8 +1,5 @@
 import { Router } from "express";
-import {
-    chat,
-    status,
-} from "../controllers/llm.controller.js";
+import { chat, status } from "../controllers/llm.controller.js";
 
 const llmRoutes = Router();
 
