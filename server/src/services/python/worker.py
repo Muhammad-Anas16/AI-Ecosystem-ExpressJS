@@ -9,11 +9,6 @@ import vosk
 import websockets
 from piper import PiperVoice, SynthesisConfig
 
-# This file is the ONLY Python file the Node server needs.
-# It does two jobs:
-#   1. Vosk -> realtime speech-to-text
-#   2. Piper -> text-to-speech WAV
-
 ROOT = Path(__file__).resolve().parents[3]
 VOSK_DIR = ROOT / os.getenv(
     "VOSK_MODEL_DIR", "models/vosk/vosk-model-small-en-us-0.15"
@@ -31,14 +26,14 @@ if not (VOSK_DIR / "conf" / "model.conf").exists():
 if not PIPER_MODEL.exists():
     raise RuntimeError(f"Piper voice model is missing: {PIPER_MODEL}")
 
-print("[PYTHON] Loading Vosk model...", flush=True)
+# print("[PYTHON] Loading Vosk model...", flush=True)
 vosk.SetLogLevel(-1)
 VOSK_MODEL = vosk.Model(str(VOSK_DIR))
-print("[PYTHON] Vosk ready.", flush=True)
+# print("[PYTHON] Vosk ready.", flush=True)
 
-print("[PYTHON] Loading Piper voice...", flush=True)
+# print("[PYTHON] Loading Piper voice...", flush=True)
 PIPER = PiperVoice.load(str(PIPER_MODEL), use_cuda=False)
-print("[PYTHON] Piper ready.", flush=True)
+# print("[PYTHON] Piper ready.", flush=True)
 
 PIPER_LOCK = asyncio.Lock()
 
@@ -201,7 +196,7 @@ async def handler(ws):
 
 
 async def main():
-    print(f"[PYTHON] Voice service: ws://{HOST}:{PORT}", flush=True)
+    # print(f"[PYTHON] Voice service: ws://{HOST}:{PORT}", flush=True)
     print("[PYTHON] Vosk realtime: READY", flush=True)
     print("[PYTHON] Piper TTS: READY", flush=True)
 

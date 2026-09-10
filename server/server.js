@@ -38,7 +38,6 @@ app.get('/api', (_req, res) => {
 // Realtime browser -> Node -> Python WebSocket proxy.
 server.on('upgrade', (request, socket, head) => {
   let pathname;
-
   try {
     pathname = new URL(
       request.url,
@@ -79,11 +78,7 @@ async function start() {
 
     server.listen(config.port, config.host, () => {
       console.log('==============================================');
-      console.log(' JARVIS Vosk + Piper Server');
       console.log(` HTTP  : http://127.0.0.1:${config.port}`);
-      console.log(` Python: ws://${config.pythonHost}:${config.pythonPort}`);
-      console.log(` Vosk  : ws://127.0.0.1:${config.port}/ws/vosk`);
-      console.log(` TTS   : POST http://127.0.0.1:${config.port}/api/tts/speak`);
       console.log('==============================================');
     });
   } catch (error) {

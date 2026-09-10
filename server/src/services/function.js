@@ -27,7 +27,7 @@ export function startPythonProcess() {
     throw new Error(`Python worker not found: ${config.worker}`);
   }
 
-  console.log(`[NODE] Starting Python worker: ${config.worker}`);
+  // console.log(`[NODE] Starting Python worker: ${config.worker}`);
 
   pythonProcess = spawn(config.python, [config.worker], {
     cwd: config.root,
