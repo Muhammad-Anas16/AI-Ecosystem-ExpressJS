@@ -2,46 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
-const exists = (file) => fs.existsSync(path.join(ROOT, file));
+const read = f => fs.readFileSync(path.join(ROOT,f),"utf8");
+const exists = f => fs.existsSync(path.join(ROOT,f));
 
-test("architecture", () => {
-  assert.ok(exists("server.js"));
-  assert.ok(exists("public/index.html"));
-  assert.ok(exists("src/services/python/worker.py"));
-  assert.ok(exists("src/services/llm.service.js"));
-  assert.ok(exists("src/services/ocr.service.js"));
-  assert.ok(exists("src/services/vision.service.js"));
-  assert.equal(exists("index.html"), false);
-  assert.equal(exists("python/worker.py"), false);
-});
-
-test("scripts", () => {
-  const pkg = JSON.parse(read("package.json"));
-  assert.equal(pkg.scripts.start, "node server.js");
-  assert.equal(pkg.scripts.dev, "nodemon server.js");
-  assert.equal(pkg.scripts.postinstall, "node scripts/setup-all.mjs");
-  assert.ok(pkg.dependencies.morgan);
-  assert.ok(pkg.devDependencies.nodemon);
-});
-
-test("endpoints and worker commands", () => {
-  const server = read("server.js");
-  const worker = read("src/services/python/worker.py");
-  assert.match(server, /\/ws\/vosk/);
-  assert.match(server, /\/ws\/tts/);
-  assert.match(worker, /message_type == "screenshot"/);
-  assert.match(worker, /VOSK_MODEL/);
-  assert.match(worker, /PiperVoice\.load/);
-});
-
-test("lazy heavy services", () => {
-  const server = read("server.js");
-  const ocr = read("src/services/ocr.service.js");
-  const vision = read("src/services/vision.service.js");
-  assert.doesNotMatch(server, /await initOCR\(\)/);
-  assert.match(ocr, /createWorker/);
-  assert.match(vision, /on-demand/);
-});
+test("server architecture",()=>{assert.ok(exists("server.js"));assert.ok(exists("public/index.html"));assert.ok(exists("src/services/python/worker.py"));});
+test("no native node llama dependency",()=>{const p=JSON.parse(read("package.json"));assert.equal(p.dependencies["node-llama-cpp"],undefined);assert.equal(p.scripts.dev,"node --watch server.js");assert.ok(p.dependencies.morgan)});
+test("server-side audio path",()=>{const w=read("src/services/python/worker.py");assert.match(w,/sounddevice/);assert.match(w,/listen_server/);assert.match(w,/play_wav/);});
+test("CPU-first model files",()=>{const m=read("src/config/models.js");assert.match(m,/qwen-0\.5b-q2/);assert.match(m,/SmolVLM2 256M/);assert.match(m,/Q4_K_M/);});
+test("WASM diagnostic is actual browser WASM",()=>{const h=read("public/index.html");assert.match(h,/automatic-speech-recognition/);assert.match(h,/device:'wasm'/);assert.match(h,/whisper-tiny/);});

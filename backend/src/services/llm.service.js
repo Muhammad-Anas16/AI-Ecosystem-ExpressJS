@@ -1,175 +1,125 @@
+import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  getLlama,
-  LlamaChatSession,
-  resolveModelFile,
-} from "node-llama-cpp";
 import { config } from "../config.js";
 import { MODELS } from "../config/models.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const modelsDirectory = path.join(path.resolve(__dirname, "../.."), "models", "llm");
-const defaultModel = MODELS.llm.find((item) => item.default) || MODELS.llm[0];
+const executable = () => process.platform === "win32" ? path.join(config.llamaDir, "llama-server.exe") : path.join(config.llamaDir, "llama-server");
+const baseUrl = () => `http://${config.llamaHost}:${config.llamaPort}`;
+const defaultModel = MODELS.llm.find((m) => m.id === config.llmDefaultModel) || MODELS.llm.find((m) => m.default);
 
-const SYSTEM_PROMPT = `You are JARVIS, a fast practical voice assistant. Reply in the user's language. Keep answers concise. For simple questions, use 1-3 short sentences. Do not repeat the question. Do not invent facts.`;
-
-let llama = null;
-let model = null;
-let context = null;
-let session = null;
+let processHandle = null;
+let starting = null;
 let currentModel = null;
-let loadingPromise = null;
-let requestQueue = Promise.resolve();
+let queue = Promise.resolve();
 
-function enqueue(task) {
-  const run = requestQueue.then(task, task);
-  requestQueue = run.catch(() => {});
+const enqueue = (task) => {
+  const run = queue.then(task, task);
+  queue = run.catch(() => {});
   return run;
+};
+
+async function healthy() {
+  try { return (await fetch(`${baseUrl()}/health`)).ok; } catch { return false; }
 }
 
-function getModelConfig(modelId) {
-  const selected = MODELS.llm.find((item) => item.id === modelId);
-  if (!selected) throw new Error(`Unknown LLM model: ${modelId}`);
-  return selected;
+async function waitReady(timeoutMs = 120000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await healthy()) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`LLM server not ready at ${baseUrl()}`);
 }
 
-function normalizeMessage(message) {
-  if (typeof message !== "string") throw new Error("message is required");
-  const text = message.trim();
-  if (!text) throw new Error("message is required");
-  return text.slice(0, 6000);
-}
-
-async function disposeCurrentLLM() {
-  const oldSession = session;
-  const oldContext = context;
-  const oldModel = model;
-  const oldLlama = llama;
-  session = null;
-  context = null;
-  model = null;
-  llama = null;
+export async function stopLLMServer() {
+  if (!processHandle) return;
+  try { processHandle.kill(); } catch {}
+  processHandle = null;
   currentModel = null;
+}
 
-  try { oldSession?.dispose?.({ disposeSequence: false }); } catch {}
-  try { await oldContext?.dispose?.(); } catch {}
-  try { await oldModel?.dispose?.(); } catch {}
-  try { await oldLlama?.dispose?.(); } catch {}
+export async function ensureLLMServer(modelId = defaultModel.id) {
+  const selected = MODELS.llm.find((m) => m.id === modelId);
+  if (!selected) throw new Error(`Unknown LLM model: ${modelId}`);
+  if (await healthy()) {
+    currentModel = selected;
+    return;
+  }
+  if (starting) { await starting; return; }
+  const exe = executable();
+  const modelPath = path.join(config.llmModelDir, selected.file);
+  if (!existsSync(exe)) throw new Error(`llama.cpp is missing: ${exe}. Run npm run setup.`);
+  if (!existsSync(modelPath)) throw new Error(`LLM model is missing: ${modelPath}. Run npm run setup.`);
+
+  starting = (async () => {
+    await stopLLMServer();
+    console.log(`[LLM] starting ${selected.name}`);
+    const args = [
+      "-m", modelPath,
+      "--host", config.llamaHost,
+      "--port", String(config.llamaPort),
+      "--threads", String(config.llamaThreads),
+      "--ctx-size", String(config.llamaContext),
+      "--parallel", "1",
+      "--n-predict", String(config.llamaMaxTokens),
+      "--log-disable",
+    ];
+    processHandle = spawn(exe, args, { cwd: config.root, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env } });
+    processHandle.stdout.on("data", (d) => process.stdout.write(`[LLAMA] ${d}`));
+    processHandle.stderr.on("data", (d) => process.stderr.write(`[LLAMA] ${d}`));
+    processHandle.on("error", (e) => console.error(`[LLM] ${e.message}`));
+    processHandle.on("exit", (code) => { console.log(`[LLM] stopped code=${code}`); processHandle = null; currentModel = null; });
+    await waitReady();
+    currentModel = selected;
+    console.log(`[LLM] ready ${selected.id}`);
+  })();
+  try { await starting; } finally { starting = null; }
 }
 
 export async function initializeLLM(modelId = defaultModel.id) {
-  const selectedModel = getModelConfig(modelId);
+  await ensureLLMServer(modelId);
+  return { ok: true, model: MODELS.llm.find((m) => m.id === modelId) || defaultModel };
+}
 
-  if (session && currentModel?.id === modelId) {
-    return { ok: true, model: selectedModel, alreadyLoaded: true };
-  }
-
-  if (loadingPromise) {
-    await loadingPromise;
-    if (session && currentModel?.id === modelId) {
-      return { ok: true, model: selectedModel, alreadyLoaded: true };
-    }
-  }
-
-  loadingPromise = (async () => {
-    try {
-      console.log(`[LLM] loading ${selectedModel.name}`);
-      await disposeCurrentLLM();
-
-      llama = await getLlama({ gpu: false, maxThreads: config.llmThreads });
-      const modelPath = await resolveModelFile(selectedModel.uri, modelsDirectory);
-
-      model = await llama.loadModel({ modelPath });
-      context = await model.createContext({
-        contextSize: config.llmContextSize,
-        batchSize: 128,
-        threads: config.llmThreads,
-        flashAttention: "auto",
-      });
-
-      session = new LlamaChatSession({
-        contextSequence: context.getSequence(),
-        systemPrompt: SYSTEM_PROMPT,
-      });
-
-      currentModel = selectedModel;
-
-      console.log(`[LLM] ready: ${selectedModel.id}`);
-      return { ok: true, model: selectedModel, modelPath, alreadyLoaded: false };
-    } catch (error) {
-      await disposeCurrentLLM();
-      throw error;
-    }
-  })();
-
-  try {
-    return await loadingPromise;
-  } finally {
-    loadingPromise = null;
-  }
+function normalizeMessage(message) {
+  if (typeof message !== "string" || !message.trim()) throw new Error("message is required");
+  return message.trim().slice(0, 5000);
 }
 
 export async function askLLM(message, options = {}) {
   const text = normalizeMessage(message);
-  const modelId = options.modelId || defaultModel.id;
-
   return enqueue(async () => {
-    await initializeLLM(modelId);
-
-    return session.prompt(text, {
-      maxTokens: Math.min(Math.max(Number(options.maxTokens || config.llmMaxTokens), 16), 256),
-      temperature: Number(options.temperature ?? 0.25),
-      topP: Number(options.topP ?? 0.85),
-      signal: options.signal,
-      stopOnAbortSignal: true,
-      trimWhitespaceSuffix: true,
+    const modelId = options.modelId || defaultModel.id;
+    await ensureLLMServer(modelId);
+    const response = await fetch(`${baseUrl()}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: "You are JARVIS, a fast local voice assistant. Reply in the user's language. Be concise and useful." },
+          { role: "user", content: text },
+        ],
+        max_tokens: Math.min(Math.max(Number(options.maxTokens || config.llamaMaxTokens), 16), 96),
+        temperature: Number(options.temperature ?? 0.2),
+        top_p: Number(options.topP ?? 0.8),
+      }),
     });
+    if (!response.ok) throw new Error(`LLM HTTP ${response.status}: ${(await response.text()).slice(0, 600)}`);
+    const data = await response.json();
+    return String(data?.choices?.[0]?.message?.content || "").trim();
   });
 }
 
-export async function streamLLM(message, options = {}) {
-  const text = normalizeMessage(message);
-  const modelId = options.modelId || defaultModel.id;
-  const onChunk = typeof options.onChunk === "function" ? options.onChunk : () => {};
-
-  return enqueue(async () => {
-    await initializeLLM(modelId);
-    let answer = "";
-
-    const result = await session.prompt(text, {
-      maxTokens: Math.min(Math.max(Number(options.maxTokens || config.llmMaxTokens), 16), 256),
-      temperature: Number(options.temperature ?? 0.25),
-      topP: Number(options.topP ?? 0.85),
-      signal: options.signal,
-      stopOnAbortSignal: true,
-      trimWhitespaceSuffix: true,
-      onTextChunk(chunk) {
-        answer += chunk;
-        onChunk(chunk);
-      },
-    });
-
-    return result || answer;
-  });
-}
-
-export function getAvailableModels() {
-  return MODELS.llm.map(({ uri, ...rest }) => ({ ...rest, uri }));
-}
+export function getAvailableModels() { return MODELS.llm.map((m) => ({ ...m })); }
 
 export function getLLMStatus() {
   return {
-    ready: Boolean(session),
+    ready: Boolean(processHandle),
     currentModel: currentModel?.id || null,
-    availableModels: getAvailableModels(),
-    settings: {
-      gpu: false,
-      threads: config.llmThreads,
-      contextSize: config.llmContextSize,
-      maxTokens: config.llmMaxTokens,
-    },
-    modelsDirectory,
+    defaultModel: defaultModel.id,
+    executable: executable(),
+    modelDirectory: config.llmModelDir,
+    settings: { threads: config.llamaThreads, contextSize: config.llamaContext, maxTokens: config.llamaMaxTokens, backend: "CPU llama.cpp" },
   };
 }

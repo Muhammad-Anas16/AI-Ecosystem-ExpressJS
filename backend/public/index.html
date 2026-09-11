@@ -1,80 +1,156 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>JARVIS Local Test</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>JARVIS Server Control</title>
   <style>
-    body{font-family:Arial,sans-serif;max-width:1000px;margin:20px auto;padding:0 16px;line-height:1.4}
-    button{padding:10px 14px;margin:4px;cursor:pointer}
-    input{padding:10px}
-    textarea{width:100%;min-height:80px;padding:10px}
-    pre{background:#111;color:#0f0;padding:12px;min-height:180px;white-space:pre-wrap}
-    img{max-width:100%;border:1px solid #bbb;margin-top:8px}
-    .card{border:1px solid #ddd;border-radius:8px;padding:14px;margin:12px 0}
-    .status{font-weight:bold}
+    body{font-family:system-ui,Segoe UI,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;background:#0f1115;color:#eee}
+    section{background:#171a21;border:1px solid #2a2f3a;border-radius:12px;padding:16px;margin:14px 0}
+    button,select,textarea{font:inherit}button{padding:9px 12px;margin:4px;border:0;border-radius:8px;cursor:pointer}
+    textarea{width:100%;min-height:76px;background:#0d0f13;color:#eee;border:1px solid #333;border-radius:8px;padding:10px}
+    pre{white-space:pre-wrap;background:#0b0d10;border-radius:8px;padding:10px;min-height:30px;overflow:auto}
+    .ok{color:#7ee787}.warn{color:#f2cc60}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.pill{padding:4px 8px;border-radius:999px;background:#252a33}
+    img{max-width:100%;border-radius:8px;margin-top:10px}
   </style>
 </head>
 <body>
-  <h1>JARVIS Local Server Test</h1>
-  <p>Server-side tests: LLM, Vosk realtime STT, Piper TTS, screenshot, OCR and Vision.</p>
+  <h1>JARVIS Server Control</h1>
+  <p>Client ka kaam sirf control/test hai. Microphone, speaker aur screenshot server machine par hotay hain.</p>
 
-  <div class="card">
-    <h2>Health</h2>
-    <button onclick="getJSON('/api/health')">Server</button>
-    <button onclick="getJSON('/api/voice/health')">Python/Vosk/Piper</button>
-    <button onclick="getJSON('/api/llm/status')">LLM</button>
-    <button onclick="getJSON('/api/ocr/status')">OCR</button>
-    <button onclick="getJSON('/api/vision/status')">Vision</button>
-  </div>
+  <section>
+    <h2>1. Health</h2>
+    <div class="row">
+      <button onclick="check('/api/health','health')">Server</button>
+      <button onclick="check('/api/voice/health','health')">Python / Audio</button>
+      <button onclick="check('/api/llm/status','health')">LLM</button>
+      <button onclick="check('/api/ocr/status','health')">Tesseract.js</button>
+      <button onclick="check('/api/vision/status','health')">Vision</button>
+      <button onclick="check('/api/wasm/status','health')">WASM</button>
+    </div>
+    <pre id="health">Ready</pre>
+  </section>
 
-  <div class="card">
-    <h2>Realtime Vosk STT</h2>
-    <button id="startVoice" onclick="startVosk()">Start microphone</button>
-    <button id="stopVoice" onclick="stopVosk()" disabled>Stop</button>
-    <div class="status" id="voskStatus">Idle</div>
-    <pre id="transcript">No transcript yet.</pre>
-  </div>
+  <section>
+    <h2>2. Server microphone → Vosk</h2>
+    <p>Browser mic permission nahi chahiye. Button ke baad JARVIS server ki default Windows microphone se sunta hai.</p>
+    <button onclick="serverListen()">Listen on server</button>
+    <pre id="listen">Idle</pre>
+  </section>
 
-  <div class="card">
-    <h2>Piper TTS</h2>
-    <input id="ttsText" value="Hello Boss. Piper text to speech is working." style="width:80%" />
-    <button onclick="testTTS()">Speak</button>
-  </div>
+  <section>
+    <h2>3. LLaMA</h2>
+    <select id="modelSelect"></select>
+    <button onclick="loadModel()">Load selected</button>
+    <textarea id="llmText">Say hello in one short sentence.</textarea>
+    <button onclick="askLLM()">Ask LLaMA</button>
+    <pre id="llm">Idle</pre>
+  </section>
 
-  <div class="card">
-    <h2>Server Screenshot</h2>
-    <button onclick="takeScreenshot()">Take screenshot</button>
-    <button onclick="runOCR()">Read screenshot with OCR</button>
-    <button onclick="runVision()">Understand screenshot with Vision</button>
-    <div><img id="screenImage" alt="Server screenshot" hidden /></div>
-  </div>
+  <section>
+    <h2>4. Piper TTS → server speaker</h2>
+    <textarea id="ttsText">Hello Boss. Server side Piper is working.</textarea>
+    <button onclick="serverSpeak()">Speak on server</button>
+    <pre id="tts">Idle</pre>
+  </section>
 
-  <div class="card">
-    <h2>LLM</h2>
-    <textarea id="llmText">Hello. Reply in one short sentence and use the same language as the user.</textarea>
-    <button onclick="testLLM()">Ask LLM</button>
-  </div>
+  <section>
+    <h2>5. Server screenshot</h2>
+    <div class="row">
+      <button onclick="screenshot()">Take screenshot</button>
+      <button onclick="runOCR()">OCR screenshot</button>
+      <button onclick="runVision()">Vision screenshot</button>
+    </div>
+    <img id="screen" hidden alt="Server screenshot">
+    <pre id="screenOut">No screenshot yet.</pre>
+  </section>
 
-  <pre id="output">Ready.</pre>
+  <section>
+    <h2>6. Tesseract.js</h2>
+    <p>OCR is server-side and reads the screenshot captured by the server. First use can download OCR language data.</p>
+    <pre id="ocr">Idle</pre>
+  </section>
 
-<script>
-const output=document.getElementById('output');
-const transcript=document.getElementById('transcript');
-const voskStatus=document.getElementById('voskStatus');
-let socket=null, audioContext=null, mediaStream=null, processor=null;
-let sourceSampleRate=48000;
-function show(v){output.textContent=typeof v==='string'?v:JSON.stringify(v,null,2)}
-async function getJSON(url,options={}){try{const r=await fetch(url,options);const ct=r.headers.get('content-type')||'';show(ct.includes('application/json')?await r.json():await r.text())}catch(e){show(e.message)}}
-async function testLLM(){await getJSON('/api/llm/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:document.getElementById('llmText').value})})}
-async function testTTS(){try{const r=await fetch('/api/voice/tts/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:document.getElementById('ttsText').value})});if(!r.ok)throw new Error(await r.text());const blob=await r.blob();const url=URL.createObjectURL(blob);const audio=new Audio(url);audio.onended=()=>URL.revokeObjectURL(url);await audio.play();show('Piper audio started.')}catch(e){show(e.message)}}
-async function takeScreenshot(){try{const r=await fetch('/api/vision/screenshot');if(!r.ok)throw new Error(await r.text());const blob=await r.blob();const url=URL.createObjectURL(blob);const img=document.getElementById('screenImage');img.src=url;img.hidden=false;show('Server screenshot captured.')}catch(e){show(e.message)}}
-async function runOCR(){await getJSON('/api/ocr/screen',{method:'POST'})}
-async function runVision(){await getJSON('/api/vision/screen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:'Describe the important visible content on this screen in a few concise sentences.'})})}
-function downsampleBuffer(buffer,inputSampleRate,outputSampleRate){if(outputSampleRate===inputSampleRate)return buffer;const ratio=inputSampleRate/outputSampleRate;const newLength=Math.round(buffer.length/ratio);const result=new Float32Array(newLength);let offset=0;let pos=0;while(offset<result.length){const next=Math.round((offset+1)*ratio);let sum=0,count=0;for(let i=Math.round(offset*ratio);i<next&&i<buffer.length;i++){sum+=buffer[i];count++}result[offset]=count?sum/count:0;offset++;pos=next}return result}
-function floatTo16BitPCM(float32){const out=new Int16Array(float32.length);for(let i=0;i<float32.length;i++){const s=Math.max(-1,Math.min(1,float32[i]));out[i]=s<0?s*0x8000:s*0x7fff}return out.buffer}
-async function startVosk(){try{mediaStream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});audioContext=new (window.AudioContext||window.webkitAudioContext)();sourceSampleRate=audioContext.sampleRate;socket=new WebSocket(`ws://${location.host}/ws/vosk`);socket.binaryType='arraybuffer';socket.onopen=()=>socket.send(JSON.stringify({type:'vosk',sample_rate:16000}));socket.onmessage=e=>{if(typeof e.data!=='string')return;let msg;try{msg=JSON.parse(e.data)}catch{return}if(msg.type==='vosk.ready'){voskStatus.textContent='Listening...';socket.send(JSON.stringify({type:'vosk.start'}));}if(msg.type==='vosk.partial')transcript.textContent='Partial: '+(msg.text||'');if(msg.type==='vosk.final'&&msg.text)transcript.textContent+=(transcript.textContent==='No transcript yet.'?'':'\n')+'Final: '+msg.text;if(msg.type==='done')stopVosk()};socket.onerror=()=>{voskStatus.textContent='WebSocket error'};processor=audioContext.createScriptProcessor(4096,1,1);const source=audioContext.createMediaStreamSource(mediaStream);processor.onaudioprocess=e=>{if(!socket||socket.readyState!==WebSocket.OPEN)return;const input=e.inputBuffer.getChannelData(0);const pcm=downsampleBuffer(input,sourceSampleRate,16000);socket.send(floatTo16BitPCM(pcm))};source.connect(processor);processor.connect(audioContext.destination);document.getElementById('startVoice').disabled=true;document.getElementById('stopVoice').disabled=false;show('Microphone connected. Speak now.')}catch(e){show(e.message);stopVosk()}}
-function stopVosk(){try{if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'vosk.end'}))}catch{}try{processor?.disconnect()}catch{}try{mediaStream?.getTracks().forEach(t=>t.stop())}catch{}try{audioContext?.close()}catch{}processor=null;mediaStream=null;audioContext=null;document.getElementById('startVoice').disabled=false;document.getElementById('stopVoice').disabled=true;voskStatus.textContent='Idle'}
+  <section>
+    <h2>7. Vision model</h2>
+    <p>SmolVLM2 256M is loaded only when Vision is requested.</p>
+    <pre id="vision">Idle</pre>
+  </section>
+
+  <section>
+    <h2>8. One-button JARVIS voice pipeline</h2>
+    <label><input id="useOCR" type="checkbox"> OCR screen</label>
+    <label><input id="useVision" type="checkbox"> Vision screen</label>
+    <button onclick="runVoiceAssistant()">Talk to JARVIS</button>
+    <pre id="assistant">Idle</pre>
+  </section>
+
+  <section>
+    <h2>9. Whisper WASM diagnostic</h2>
+    <p>Ye optional browser diagnostic hai. Main JARVIS voice path server-side Vosk use karta hai, lekin yahan Whisper tiny ko actual WebAssembly par test kar sakte ho.</p>
+    <div class="row">
+      <button id="wasmStart" onclick="startWasm()">Record</button>
+      <button id="wasmStop" onclick="stopWasm()" disabled>Stop + transcribe</button>
+    </div>
+    <pre id="wasm">WASM idle</pre>
+  </section>
+
+<script type="module">
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2/+esm';
+env.allowLocalModels = false;
+env.useBrowserCache = true;
+const $ = id => document.getElementById(id);
+let ws;
+let wasmRecorder, wasmStream, wasmChunks = [], whisper;
+const wsUrl = p => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${p}`;
+function show(id,v){$(id).textContent=typeof v==='string'?v:JSON.stringify(v,null,2)}
+async function check(url,id){try{const r=await fetch(url);show(id,await r.json())}catch(e){show(id,e.message)}}
+function socket(){
+  if(ws&&ws.readyState===WebSocket.OPEN)return Promise.resolve(ws);
+  return new Promise((resolve,reject)=>{
+    ws=new WebSocket(wsUrl('/ws/jarvis')); ws.binaryType='arraybuffer';
+    ws.onopen=()=>resolve(ws); ws.onerror=()=>reject(new Error('WebSocket error'));
+  });
+}
+async function request(message, handlers={}){
+  const s=await socket();
+  return new Promise((resolve,reject)=>{
+    const previous=s.onmessage;
+    let done=false;
+    s.onmessage=async e=>{
+      if(typeof e.data!=='string')return;
+      let m;try{m=JSON.parse(e.data)}catch{return}
+      if(handlers[m.type])handlers[m.type](m);
+      if(m.type==='error'&&!done){done=true;s.onmessage=previous;reject(new Error(m.error));}
+      if(m.type==='done'&&!done){done=true;s.onmessage=previous;resolve();}
+    };
+    s.send(JSON.stringify(message));
+  });
+}
+async function loadModels(){const r=await fetch('/api/llm/models');const d=await r.json();$('modelSelect').innerHTML=d.models.map(x=>`<option value="${x.id}">${x.name}${x.default?' (default)':''}</option>`).join('')}
+window.loadModel=async()=>{try{show('llm','Loading...');const r=await fetch('/api/llm/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({modelId:$('modelSelect').value})});show('llm',await r.json())}catch(e){show('llm',e.message)}}
+window.askLLM=async()=>{try{show('llm','Generating...');await request({type:'llm',text:$('llmText').value,modelId:$('modelSelect').value},{'llm.result':m=>show('llm',m.answer)})}catch(e){show('llm',e.message)}}
+window.serverListen=async()=>{try{show('listen','Listening on server microphone...');await request({type:'voice.assistant'},{'listen.partial':m=>show('listen','Partial: '+m.text),'voice.result':m=>show('listen',m.text||'No speech detected'),'assistant.result':m=>show('assistant',m)})}catch(e){show('listen',e.message)}}
+window.serverSpeak=async()=>{try{show('tts','Speaking from server speaker...');await request({type:'tts',text:$('ttsText').value,play:true},{'tts.meta':m=>show('tts',m)})}catch(e){show('tts',e.message)}}
+window.screenshot=async()=>{try{show('screenOut','Capturing...');const r=await fetch('/api/vision/screenshot');if(!r.ok)throw new Error(await r.text());const b=await r.blob();$('screen').src=URL.createObjectURL(b);$('screen').hidden=false;show('screenOut',`Server screenshot: ${b.size} bytes`)}catch(e){show('screenOut',e.message)}}
+window.runOCR=async()=>{try{show('ocr','Running Tesseract.js...');const r=await fetch('/api/ocr/screen',{method:'POST'});show('ocr',await r.json())}catch(e){show('ocr',e.message)}}
+window.runVision=async()=>{try{show('vision','Running SmolVLM2...');const r=await fetch('/api/vision/screen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:'Describe only the important visible screen content. Keep it concise.'})});show('vision',await r.json())}catch(e){show('vision',e.message)}}
+window.runVoiceAssistant=async()=>{try{show('assistant','Listening, then thinking, then speaking from server...');await request({type:'voice.assistant',screen:$('useOCR').checked||$('useVision').checked,ocr:$('useOCR').checked,vision:$('useVision').checked},{'listen.partial':m=>show('assistant','Listening: '+m.text),'voice.result':m=>show('assistant','You said: '+m.text),'assistant.result':m=>show('assistant',m)})}catch(e){show('assistant',e.message)}}
+
+window.startWasm=async()=>{
+  try{
+    if(!whisper){show('wasm','Loading Whisper tiny WASM model...');whisper=await pipeline('automatic-speech-recognition','onnx-community/whisper-tiny',{device:'wasm',dtype:'q8'});show('wasm','WASM model ready. Recording...')}
+    wasmStream=await navigator.mediaDevices.getUserMedia({audio:true}); wasmChunks=[]; wasmRecorder=new MediaRecorder(wasmStream);
+    wasmRecorder.ondataavailable=e=>e.data.size&&wasmChunks.push(e.data); wasmRecorder.start(); $('wasmStart').disabled=true; $('wasmStop').disabled=false;
+  }catch(e){show('wasm',e.message)}
+}
+window.stopWasm=async()=>{
+  try{await new Promise(res=>{wasmRecorder.onstop=res;wasmRecorder.stop()});wasmStream.getTracks().forEach(t=>t.stop());$('wasmStart').disabled=false;$('wasmStop').disabled=true;
+    const blob=new Blob(wasmChunks,{type:'audio/webm'}); const audio=await decodeAudio(blob); const result=await whisper(audio); show('wasm',result.text||result);
+  }catch(e){show('wasm',e.message)}
+}
+async function decodeAudio(blob){const ctx=new AudioContext();const buf=await ctx.decodeAudioData(await blob.arrayBuffer());return new Float32Array(buf.getChannelData(0))}
+await loadModels();
 </script>
 </body>
 </html>

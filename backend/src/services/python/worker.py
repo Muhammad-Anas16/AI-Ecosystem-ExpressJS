@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import io
 import json
 import os
@@ -7,158 +6,116 @@ import wave
 from pathlib import Path
 
 import mss
+import numpy as np
+import sounddevice as sd
 import vosk
 import websockets
 from PIL import Image
 from piper import PiperVoice, SynthesisConfig
 
 ROOT = Path(__file__).resolve().parents[3]
+SAMPLE_RATE = int(os.getenv("VOSK_SAMPLE_RATE", "16000"))
 VOSK_DIR = ROOT / os.getenv("VOSK_MODEL_DIR", "models/vosk/vosk-model-small-en-us-0.15")
 PIPER_DIR = ROOT / os.getenv("PIPER_DATA_DIR", "models/piper")
 PIPER_VOICE = os.getenv("PIPER_VOICE", "en_US-lessac-medium")
-PIPER_MODEL = PIPER_DIR / f"{PIPER_VOICE}.onnx"
+SCREEN_MAX_WIDTH = int(os.getenv("SCREEN_MAX_WIDTH", "960"))
+SCREEN_JPEG_QUALITY = int(os.getenv("SCREEN_JPEG_QUALITY", "55"))
 HOST = os.getenv("PYTHON_HOST", "127.0.0.1")
 PORT = int(os.getenv("PYTHON_PORT", "8765"))
-SAMPLE_RATE = int(os.getenv("VOSK_SAMPLE_RATE", "16000"))
-
-if not (VOSK_DIR / "conf" / "model.conf").exists():
-    raise RuntimeError(f"Vosk model is missing: {VOSK_DIR}")
-
-if not PIPER_MODEL.exists():
-    raise RuntimeError(f"Piper voice model is missing: {PIPER_MODEL}")
 
 vosk.SetLogLevel(-1)
 VOSK_MODEL = vosk.Model(str(VOSK_DIR))
-PIPER = PiperVoice.load(str(PIPER_MODEL), use_cuda=False)
-PIPER_LOCK = asyncio.Lock()
+PIPER = PiperVoice.load(str(PIPER_DIR / f"{PIPER_VOICE}.onnx"))
+AUDIO_LOCK = asyncio.Lock()
 
 
 def status():
-    return {
-        "vosk": "ready",
-        "piper_tts": "ready",
-        "screen_capture": "ready",
-        "sample_rate": SAMPLE_RATE,
-        "format": "pcm_s16le_mono",
-        "offline": True,
-    }
+    return {"vosk": "ready", "tts": "piper-ready", "microphone": "server-side", "speaker": "server-side", "screen": "server-side-ready", "sample_rate": SAMPLE_RATE}
 
 
-def make_wav(text: str, length_scale: float) -> bytes:
-    memory = io.BytesIO()
-    with wave.open(memory, "wb") as wav:
-        PIPER.synthesize_wav(
-            text,
-            wav,
-            syn_config=SynthesisConfig(length_scale=length_scale),
-        )
-    return memory.getvalue()
+def make_wav(text, length_scale):
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        PIPER.synthesize_wav(text, wav, syn_config=SynthesisConfig(length_scale=length_scale))
+    return output.getvalue()
 
 
-async def speak(text: str, length_scale: float) -> bytes:
-    async with PIPER_LOCK:
-        return await asyncio.to_thread(make_wav, text, length_scale)
+def play_wav(wav_bytes):
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        params = wf.getparams()
+        data = wf.readframes(params.nframes)
+    dtype = "int16" if params.sampwidth == 2 else "uint8"
+    with sd.RawOutputStream(samplerate=params.framerate, channels=params.nchannels, dtype=dtype) as out:
+        out.write(data)
 
 
-def make_screenshot() -> bytes:
+def make_screenshot():
     with mss.mss() as sct:
         monitor = sct.monitors[1]
         shot = sct.grab(monitor)
         image = Image.frombytes("RGB", shot.size, shot.rgb)
-
-        # Old PCs benefit from smaller images. Vision does not need a full-resolution desktop.
-        max_width = 1280
-        if image.width > max_width:
-            ratio = max_width / image.width
-            image = image.resize((max_width, max(1, int(image.height * ratio))), Image.Resampling.LANCZOS)
-
-        buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=65, optimize=True)
-        return buffer.getvalue()
+        if image.width > SCREEN_MAX_WIDTH:
+            ratio = SCREEN_MAX_WIDTH / image.width
+            image = image.resize((SCREEN_MAX_WIDTH, max(1, int(image.height * ratio))), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=SCREEN_JPEG_QUALITY, optimize=True)
+        return output.getvalue()
 
 
-async def send_error(ws, message: str):
+async def send_error(ws, message):
     await ws.send(json.dumps({"type": "error", "error": message}))
 
 
-async def handle_health(ws):
-    await ws.send(json.dumps({"type": "result", **status()}))
-    await ws.send(json.dumps({"type": "done"}))
+async def listen_server(ws, max_seconds, silence_seconds):
+    loop = asyncio.get_running_loop()
+    queue = asyncio.Queue()
+    stop_event = asyncio.Event()
 
-
-async def handle_tts(ws, message):
-    text = str(message.get("text", "")).strip()
-    if not text:
-        await send_error(ws, "text is required")
-        return
-
-    try:
-        length_scale = float(message.get("length_scale", 1.0))
-    except (TypeError, ValueError):
-        await send_error(ws, "length_scale must be a number")
-        return
-
-    if length_scale <= 0:
-        await send_error(ws, "length_scale must be positive")
-        return
-
-    audio = await speak(text, length_scale)
-    await ws.send(json.dumps({"type": "piper.meta", "format": "wav", "bytes": len(audio)}))
-    await ws.send(audio)
-    await ws.send(json.dumps({"type": "done"}))
-
-
-async def handle_screenshot(ws):
-    image = await asyncio.to_thread(make_screenshot)
-    await ws.send(json.dumps({"type": "screen.meta", "format": "jpeg", "bytes": len(image)}))
-    await ws.send(image)
-    await ws.send(json.dumps({"type": "done"}))
-
-
-async def handle_vosk(ws, first_message):
-    requested_rate = int(first_message.get("sample_rate", SAMPLE_RATE))
-    if requested_rate != SAMPLE_RATE:
-        await send_error(ws, f"Unsupported sample_rate {requested_rate}; use {SAMPLE_RATE}")
-        return
+    def callback(indata, frames, time, status):
+        if status:
+            print(f"[AUDIO] {status}", flush=True)
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, bytes(indata))
+        except RuntimeError:
+            pass
 
     recognizer = vosk.KaldiRecognizer(VOSK_MODEL, SAMPLE_RATE)
-    await ws.send(json.dumps({
-        "type": "vosk.ready",
-        "sample_rate": SAMPLE_RATE,
-        "format": "pcm_s16le_mono",
-    }))
-
-    async for message in ws:
-        if isinstance(message, str):
+    silence_started = None
+    started = loop.time()
+    await ws.send(json.dumps({"type": "listen.ready", "sample_rate": SAMPLE_RATE, "max_seconds": max_seconds}))
+    stream = sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=4000, dtype="int16", channels=1, callback=callback)
+    stream.start()
+    try:
+        while not stop_event.is_set() and loop.time() - started < max_seconds:
             try:
-                command = json.loads(message)
-            except json.JSONDecodeError:
-                await send_error(ws, "Invalid JSON command")
+                chunk = await asyncio.wait_for(queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
                 continue
-
-            command_type = command.get("type")
-            if command_type == "vosk.start":
-                await ws.send(json.dumps({"type": "vosk.started", "sample_rate": SAMPLE_RATE}))
-                continue
-
-            if command_type == "vosk.end":
-                result = json.loads(recognizer.FinalResult())
-                await ws.send(json.dumps({"type": "vosk.final", "text": result.get("text", "")}))
-                await ws.send(json.dumps({"type": "done"}))
-                return
-
-            await send_error(ws, f"Unknown Vosk command: {command_type}")
-            continue
-
-        try:
-            if recognizer.AcceptWaveform(message):
+            signal = np.frombuffer(chunk, dtype=np.int16)
+            rms = float(np.sqrt(np.mean(np.square(signal.astype(np.float32))) + 1e-9)) if signal.size else 0.0
+            if recognizer.AcceptWaveform(chunk):
                 result = json.loads(recognizer.Result())
-                await ws.send(json.dumps({"type": "vosk.final", "text": result.get("text", "")}))
+                text = result.get("text", "").strip()
+                if text:
+                    await ws.send(json.dumps({"type": "listen.partial_final", "text": text}))
+                silence_started = None
             else:
-                partial = json.loads(recognizer.PartialResult())
-                await ws.send(json.dumps({"type": "vosk.partial", "text": partial.get("partial", "")}))
-        except Exception as exc:
-            await send_error(ws, str(exc))
+                partial = json.loads(recognizer.PartialResult()).get("partial", "").strip()
+                if partial:
+                    await ws.send(json.dumps({"type": "listen.partial", "text": partial}))
+            if rms < 300:
+                silence_started = silence_started or loop.time()
+                if loop.time() - silence_started >= silence_seconds:
+                    break
+            else:
+                silence_started = None
+        final = json.loads(recognizer.FinalResult()).get("text", "").strip()
+        await ws.send(json.dumps({"type": "listen.final", "text": final}))
+        await ws.send(json.dumps({"type": "done"}))
+    finally:
+        stop_event.set()
+        stream.stop()
+        stream.close()
 
 
 async def handler(ws):
@@ -167,27 +124,38 @@ async def handler(ws):
         if not isinstance(first, str):
             await send_error(ws, "First message must be JSON")
             return
-
-        message = json.loads(first)
-        message_type = message.get("type")
-
-        if message_type == "health":
-            await handle_health(ws)
+        cmd = json.loads(first)
+        kind = cmd.get("type")
+        if kind == "health":
+            await ws.send(json.dumps({"type": "result", **status()}))
+            await ws.send(json.dumps({"type": "done"}))
             return
-
-        if message_type in {"tts", "piper.tts"}:
-            await handle_tts(ws, message)
+        if kind == "tts":
+            text = str(cmd.get("text", "")).strip()[:3000]
+            if not text:
+                await send_error(ws, "text is required")
+                return
+            async with AUDIO_LOCK:
+                wav = await asyncio.to_thread(make_wav, text, float(cmd.get("length_scale", 1.0)))
+                if cmd.get("play", True):
+                    await asyncio.to_thread(play_wav, wav)
+            await ws.send(json.dumps({"type": "tts.meta", "format": "audio/wav", "bytes": len(wav), "played": bool(cmd.get("play", True))}))
+            await ws.send(wav)
+            await ws.send(json.dumps({"type": "done"}))
             return
-
-        if message_type == "screenshot":
-            await handle_screenshot(ws)
+        if kind == "screenshot":
+            image = await asyncio.to_thread(make_screenshot)
+            await ws.send(json.dumps({"type": "screen.meta", "format": "image/jpeg", "bytes": len(image)}))
+            await ws.send(image)
+            await ws.send(json.dumps({"type": "done"}))
             return
-
-        if message_type in {"vosk", "stt", "vosk.start"}:
-            await handle_vosk(ws, message)
+        if kind == "listen":
+            await listen_server(ws, float(cmd.get("max_seconds", 12)), float(cmd.get("silence_seconds", 1.15)))
             return
-
-        await send_error(ws, f"Unknown type: {message_type}")
+        if kind == "listen.stop":
+            await ws.send(json.dumps({"type": "done"}))
+            return
+        await send_error(ws, f"Unknown type: {kind}")
     except websockets.ConnectionClosed:
         pass
     except Exception as exc:
@@ -198,17 +166,11 @@ async def handler(ws):
 
 
 async def main():
-    print("[PYTHON] Vosk READY", flush=True)
-    print("[PYTHON] Piper READY", flush=True)
-    print("[PYTHON] Screen capture READY", flush=True)
-
-    async with websockets.serve(
-        handler,
-        HOST,
-        PORT,
-        max_size=12 * 1024 * 1024,
-    ):
-        print(f"[PYTHON] WebSocket service: ws://{HOST}:{PORT}", flush=True)
+    print("[PYTHON] Server microphone READY", flush=True)
+    print("[PYTHON] Piper speaker READY", flush=True)
+    print("[PYTHON] Server screenshot READY", flush=True)
+    async with websockets.serve(handler, HOST, PORT, max_size=12 * 1024 * 1024, ping_interval=20, ping_timeout=20):
+        print(f"[PYTHON] ws://{HOST}:{PORT}", flush=True)
         await asyncio.Future()
 
 
